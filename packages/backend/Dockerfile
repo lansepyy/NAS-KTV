@@ -10,7 +10,7 @@ FROM base AS deps
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
 COPY packages/backend/package.json ./packages/backend/
 COPY packages/shared/package.json ./packages/shared/
-RUN pnpm install --frozen-lockfile --filter @nasktv/backend...
+RUN echo "force deps rebuild $(date +%s)" && pnpm install --frozen-lockfile --filter @nasktv/backend...
 
 FROM base AS build
 COPY --from=deps /app/node_modules ./node_modules
@@ -32,7 +32,7 @@ WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
 COPY packages/backend/package.json ./packages/backend/
 COPY packages/shared/package.json ./packages/shared/
-RUN pnpm install --frozen-lockfile --filter @nasktv/backend...
+RUN echo "force prod rebuild $(date +%s)" && pnpm install --frozen-lockfile --filter @nasktv/backend...
 COPY --from=build --chown=nasktv:nasktv /app/packages/backend/src ./packages/backend/src
 COPY --from=build --chown=nasktv:nasktv /app/packages/backend/assets ./packages/backend/assets
 COPY --from=build --chown=nasktv:nasktv /app/packages/backend/package.json ./packages/backend/
