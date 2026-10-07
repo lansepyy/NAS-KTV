@@ -12,13 +12,6 @@ COPY packages/backend/package.json ./packages/backend/
 COPY packages/shared/package.json ./packages/shared/
 RUN pnpm install --frozen-lockfile --filter @nasktv/backend...
 
-# 生产依赖：仅安装 dependencies（不含 devDependencies），大幅缩小镜像
-FROM base AS prod-deps
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
-COPY packages/backend/package.json ./packages/backend/
-COPY packages/shared/package.json ./packages/shared/
-RUN pnpm install --frozen-lockfile --prod --filter @nasktv/backend...
-
 FROM base AS build
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/packages/backend/node_modules ./packages/backend/node_modules
@@ -43,9 +36,9 @@ COPY --from=build --chown=nasktv:nasktv /app/packages/backend/package.json ./pac
 COPY --from=build --chown=nasktv:nasktv /app/packages/backend/drizzle ./packages/backend/drizzle
 COPY --from=build --chown=nasktv:nasktv /app/packages/shared/src ./packages/shared/src
 COPY --from=build --chown=nasktv:nasktv /app/packages/shared/package.json ./packages/shared/
-COPY --from=prod-deps --chown=nasktv:nasktv /app/node_modules ./node_modules
+COPY --from=deps --chown=nasktv:nasktv /app/node_modules ./node_modules
 RUN mkdir -p data/db data/songs data/separation data/uploads && \
     chown -R nasktv:nasktv data
 USER nasktv
 EXPOSE 3000
-CMD ["node_modules/.bin/tsx", "packages/backend/src/index.ts"]
+CMD ["pnpm", "exec", "tsx", "packages/backend/src/index.ts"]
