@@ -41,4 +41,4 @@ RUN mkdir -p data/db data/songs data/separation data/uploads && \
     chown -R nasktv:nasktv data
 USER nasktv
 EXPOSE 3000
-CMD ["pnpm", "exec", "tsx", "packages/backend/src/index.ts"]
+CMD ["node", "node_modules/tsx/dist/cli.mjs", "packages/backend/src/index.ts"]
