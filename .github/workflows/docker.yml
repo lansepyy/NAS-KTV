@@ -1,122 +1,416 @@
-# Build & push NASKTV Docker images (backend / separator / downloader / web)
+# Build & push NASKTV Docker images
+# backend / separator / downloader / web
 #
-# Reusable workflow: call from release.yml (with `tag`), or dispatch manually.
+# GitHub Actions -> GitHub Container Registry (GHCR)
 #
-# Required repo/environment secrets:
-#   ALIYUN_ACR_REGISTRY   e.g. registry.cn-hangzhou.aliyuncs.com
-#   ALIYUN_ACR_USERNAME   ACR login username (usually RAM AccessKeyId)
-#   ALIYUN_ACR_PASSWORD   ACR login password (usually RAM AccessKeySecret)
-#   ALIYUN_ACR_NAMESPACE  image namespace, e.g. nasktv
+# Images:
+#   ghcr.io/<OWNER>/nasktv:backend-<semver>
+#   ghcr.io/<OWNER>/nasktv:separator-<semver>
+#   ghcr.io/<OWNER>/nasktv:downloader-<semver>
+#   ghcr.io/<OWNER>/nasktv:web-<semver>
 #
-# Images are pushed to a SINGLE repository, distinguished by tag prefix:
-#   <REGISTRY>/<NAMESPACE>/nasktv:backend-<semver>
-#   <REGISTRY>/<NAMESPACE>/nasktv:separator-<semver>
-#   <REGISTRY>/<NAMESPACE>/nasktv:downloader-<semver>
-#   <REGISTRY>/<NAMESPACE>/nasktv:web-<semver>
-# Each also gets a <service>-<major>.<minor> tag (e.g. backend-0.2),
-# and — only on a real release (inputs.tag provided) — a <service>-latest tag.
-# Platform: linux/amd64 only — 部署目标为 x86（separator 配 NVIDIA GPU）。arm64 需 QEMU
-# 模拟，重 Node 构建（pnpm install / vite build）会触发 "Illegal instruction" 崩溃，故不构建。
+# Release 时额外生成：
+#   <service>-latest
+#
+# Platform:
+#   linux/amd64
+#
+# Registry:
+#   GitHub Container Registry (GHCR)
+#
+# 不再需要：
+#   ALIYUN_ACR_REGISTRY
+#   ALIYUN_ACR_USERNAME
+#   ALIYUN_ACR_PASSWORD
+#   ALIYUN_ACR_NAMESPACE
 
 name: Build Docker Images
 
+
+# ==============================================================
+# Workflow triggers
+# ==============================================================
+
 on:
+
+  # ------------------------------------------------------------
+  # Reusable workflow
+  # release.yml 可以通过 workflow_call 调用
+  # ------------------------------------------------------------
+
   workflow_call:
-    inputs:
-      tag:
-        type: string
-        default: ''
-  workflow_dispatch:
+
     inputs:
       tag:
         type: string
         default: ''
         required: false
 
+
+  # ------------------------------------------------------------
+  # 手动执行
+  # ------------------------------------------------------------
+
+  workflow_dispatch:
+
+    inputs:
+      tag:
+        description: 'Docker image version, e.g. v0.2.3'
+        type: string
+        default: ''
+        required: false
+
+
+# ==============================================================
+# GitHub Actions permissions
+#
+# packages: write
+#   允许向 GHCR 推送 Docker 镜像
+# ==============================================================
+
+permissions:
+  contents: read
+  packages: write
+
+
+# ==============================================================
+# Jobs
+# ==============================================================
+
 jobs:
+
   build:
+
+    name: Build ${{ matrix.name }}
+
     runs-on: ubuntu-latest
+
     strategy:
+
       fail-fast: false
+
       matrix:
+
         include:
+
+          # ----------------------------------------------------
+          # Backend
+          # ----------------------------------------------------
+
           - name: backend
             context: .
             dockerfile: packages/backend/Dockerfile
+
+
+          # ----------------------------------------------------
+          # Separator
+          # ----------------------------------------------------
+
           - name: separator
             context: packages/separator
             dockerfile: packages/separator/Dockerfile
+
+
+          # ----------------------------------------------------
+          # Downloader
+          # ----------------------------------------------------
+
           - name: downloader
             context: packages/downloader
             dockerfile: packages/downloader/Dockerfile
+
+
+          # ----------------------------------------------------
+          # Web
+          # ----------------------------------------------------
+
           - name: web
             context: .
             dockerfile: packages/web/Dockerfile
+
+
     steps:
+
+      # ========================================================
+      # Checkout
+      # ========================================================
+
       - name: Checkout
         uses: actions/checkout@v4
 
+
+      # ========================================================
+      # Sync version
+      # ========================================================
+
       - name: Sync version
+
         shell: bash
+
         env:
           TAG: ${{ inputs.tag }}
+
         run: |
-          # 有 tag 用 tag 版本（精确匹配 Release），无 tag 从 manifest 同步
-          # （release-please 每次 Release PR 合并后 manifest 已 bump 并提交到 main）
+
+          set -e
+
+          # 有 tag：
+          #   使用 Release tag 版本
+          #
+          # 无 tag：
+          #   从 manifest 同步版本
+
           if [ -n "$TAG" ]; then
+
             node scripts/set-version.mjs "${TAG#v}"
+
           else
+
             node scripts/set-version.mjs
+
           fi
 
-      - name: Set up Buildx
+
+      # ========================================================
+      # Setup Docker Buildx
+      # ========================================================
+
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Aliyun ACR
+
+      # ========================================================
+      # Login to GitHub Container Registry
+      #
+      # github.actor：
+      #   当前执行 Actions 的 GitHub 用户
+      #
+      # GITHUB_TOKEN：
+      #   GitHub Actions 自动提供
+      # ========================================================
+
+      - name: Login to GHCR
+
         uses: docker/login-action@v3
+
         with:
-          registry: ${{ secrets.ALIYUN_ACR_REGISTRY }}
-          username: ${{ secrets.ALIYUN_ACR_USERNAME }}
-          password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+
+          registry: ghcr.io
+
+          username: ${{ github.actor }}
+
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+
+      # ========================================================
+      # Compute image tags
+      # ========================================================
 
       - name: Compute image tags
+
         id: tags
+
         env:
-          REGISTRY: ${{ secrets.ALIYUN_ACR_REGISTRY }}
-          NAMESPACE: ${{ secrets.ALIYUN_ACR_NAMESPACE }}
+
+          # ----------------------------------------------------
+          # 自动获取仓库 Owner
+          #
+          # 例如：
+          #
+          # github.com/lansepyy/nasktv
+          #        ↓
+          # lansepyy
+          #
+          # 如果以后变成：
+          #
+          # github.com/NASKTV/nasktv
+          #        ↓
+          # NASKTV
+          #
+          # 不需要修改 workflow
+          # ----------------------------------------------------
+
+          OWNER: ${{ github.repository_owner }}
+
+
+          # ----------------------------------------------------
+          # Tag
+          # ----------------------------------------------------
+
           TAG: ${{ inputs.tag || github.ref_name }}
+
+
+          # ----------------------------------------------------
+          # 判断是否为 Release 调用
+          # ----------------------------------------------------
+
           INPUT_TAG: ${{ inputs.tag }}
+
         shell: bash
+
         run: |
+
+          set -e
+
+
+          # ----------------------------------------------------
+          # 去掉 v 前缀
+          #
+          # v0.2.3
+          # ↓
+          # 0.2.3
+          # ----------------------------------------------------
+
           VER="${TAG#v}"
-          BASE="${REGISTRY}/${NAMESPACE}/nasktv"
+
+
+          # ----------------------------------------------------
+          # GHCR 基础镜像地址
+          #
+          # 自动使用当前仓库 Owner
+          # ----------------------------------------------------
+
+          BASE="ghcr.io/${OWNER}/nasktv"
+
+
+          # ----------------------------------------------------
+          # 防止版本为空
+          # ----------------------------------------------------
+
+          if [ -z "$VER" ]; then
+
+            echo "ERROR: Docker image version is empty."
+
+            exit 1
+
+          fi
+
+
+          echo "======================================"
+          echo "Docker Registry : ghcr.io"
+          echo "Repository Owner : ${OWNER}"
+          echo "Image Base       : ${BASE}"
+          echo "Version          : ${VER}"
+          echo "Service          : ${{ matrix.name }}"
+          echo "======================================"
+
+
           {
+
             echo "tags<<EOF"
+
+
+            # --------------------------------------------------
+            # 完整版本
+            #
+            # backend-0.2.3
+            # --------------------------------------------------
+
             echo "${BASE}:${{ matrix.name }}-${VER}"
+
+
+            # --------------------------------------------------
+            # major.minor
+            #
+            # backend-0.2
+            # --------------------------------------------------
+
             echo "${BASE}:${{ matrix.name }}-${VER%.*}"
-            # 真实发布（提供了 tag）时额外打 latest 标签，便于生产部署引用
+
+
+            # --------------------------------------------------
+            # Release 才生成 latest
+            #
+            # backend-latest
+            # --------------------------------------------------
+
             if [ -n "${INPUT_TAG}" ]; then
+
               echo "${BASE}:${{ matrix.name }}-latest"
+
             fi
+
+
             echo "EOF"
+
           } >> "$GITHUB_OUTPUT"
 
+
+      # ========================================================
+      # Build & Push
+      # ========================================================
+
       - name: Build and push
+
         uses: docker/build-push-action@v6
+
         with:
+
+          # ----------------------------------------------------
+          # Docker build context
+          # ----------------------------------------------------
+
           context: ${{ matrix.context }}
+
+
+          # ----------------------------------------------------
+          # Dockerfile
+          # ----------------------------------------------------
+
           file: ${{ matrix.dockerfile }}
+
+
+          # ----------------------------------------------------
+          # 只构建 amd64
+          #
+          # separator 使用 NVIDIA GPU
+          # 因此不构建 arm64
+          # ----------------------------------------------------
+
           platforms: linux/amd64
+
+
+          # ----------------------------------------------------
+          # 构建完成后直接推送 GHCR
+          # ----------------------------------------------------
+
           push: true
-          # ACR 不兼容 buildx 默认的 provenance/SBOM attestation 空清单
-          # (application/vnd.oci.empty.v1+json)，会导致推送报
-          # "denied: unknown manifest class"。关闭后回退为标准 docker manifest v2。
+
+
+          # ----------------------------------------------------
+          # 关闭 provenance
+          # ----------------------------------------------------
+
           provenance: false
+
+
+          # ----------------------------------------------------
+          # 关闭 SBOM
+          # ----------------------------------------------------
+
           sbom: false
-          # 前端构建期参数：web 镜像构建时注入；backend/separator 镜像虽不消费该参数，
-          # 但已在各自 Dockerfile 顶部声明 ARG，以消除 buildx "build arg 未消费" 告警。
+
+
+          # ----------------------------------------------------
+          # Web 构建参数
+          # ----------------------------------------------------
+
           build-args: |
+
             VITE_API_BASE_URL=${{ vars.VITE_API_BASE_URL }}
+
+
+          # ----------------------------------------------------
+          # Docker tags
+          # ----------------------------------------------------
+
           tags: ${{ steps.tags.outputs.tags }}
+
+
+          # ----------------------------------------------------
+          # GitHub Actions Docker Layer Cache
+          # ----------------------------------------------------
+
           cache-from: type=gha
+
           cache-to: type=gha,mode=max
