@@ -16,8 +16,6 @@ FROM base AS build
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/packages/backend/node_modules ./packages/backend/node_modules
 COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
-# NOTE: skipped tsc --noEmit — production image uses tsx (JIT), no precompile needed.
-# Type errors are caught by desktop/android CI builds which run full tsc.
 COPY packages/backend/src ./packages/backend/src/
 COPY packages/backend/assets ./packages/backend/assets/
 COPY packages/backend/package.json ./packages/backend/
@@ -26,19 +24,23 @@ COPY packages/shared/src ./packages/shared/src/
 COPY packages/shared/package.json ./packages/shared/
 
 FROM node:20-alpine AS production
+RUN npm install -g pnpm@9
 RUN addgroup --system --gid 1001 nasktv && \
     adduser --system --uid 1001 nasktv && \
     apk add --no-cache ffmpeg
 WORKDIR /app
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* ./
+COPY packages/backend/package.json ./packages/backend/
+COPY packages/shared/package.json ./packages/shared/
+RUN pnpm install --frozen-lockfile --filter @nasktv/backend...
 COPY --from=build --chown=nasktv:nasktv /app/packages/backend/src ./packages/backend/src
 COPY --from=build --chown=nasktv:nasktv /app/packages/backend/assets ./packages/backend/assets
 COPY --from=build --chown=nasktv:nasktv /app/packages/backend/package.json ./packages/backend/
 COPY --from=build --chown=nasktv:nasktv /app/packages/backend/drizzle ./packages/backend/drizzle
 COPY --from=build --chown=nasktv:nasktv /app/packages/shared/src ./packages/shared/src
 COPY --from=build --chown=nasktv:nasktv /app/packages/shared/package.json ./packages/shared/
-COPY --from=deps --chown=nasktv:nasktv /app/node_modules ./node_modules
 RUN mkdir -p data/db data/songs data/separation data/uploads && \
     chown -R nasktv:nasktv data
 USER nasktv
 EXPOSE 3000
-CMD ["node", "node_modules/tsx/dist/cli.mjs", "packages/backend/src/index.ts"]
+CMD ["node_modules/.bin/tsx", "packages/backend/src/index.ts"]
